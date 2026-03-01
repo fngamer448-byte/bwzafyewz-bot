@@ -1,0 +1,20 @@
+{
+    "welcome_channels": {
+        "1291824635276562432": 1476619479516581958
+    },
+    "goodbye_channels": {
+        "1291824635276562432": 1476619511154081853
+    },
+    "autorole": {
+        "1291824635276562432": 1476619333500272881
+    },
+    "bot_settings": {
+        "security": true,
+        "antinuke": true,
+        "whitelist": [],
+        "ticket_roles": [],
+        "unban_link": "Not set",
+        "log_channel_id": null
+    },
+    "apply_link": "https://espada.work.gd/"
+}
