@@ -15,6 +15,20 @@ WARN_FILE = "warnings.json"
 CONFIG_FILE = "bot_config.json"
 LEVELING_FILE = "leveling.json"
 ROLE_REWARDS_FILE = "role_rewards.json"
+PREMIUM_FILE = "premium.json"
+
+# ================= OWNER / PREMIUM CONFIG =================
+# Add your owner IDs here (up to 6)
+OWNER_IDS = {
+    1460710481999167632,
+    # Add more owner IDs below:
+    # 123456789012345678,
+    # 123456789012345678,
+    # 123456789012345678,
+    # 123456789012345678,
+    # 123456789012345678,
+}
+DEFAULT_PREMIUM_PASSWORD = "nexafyrez"
 
 # ================= ANIMATED EMOJIS =================
 E_BULLET = "<a:op:1452648651481677886>"
@@ -47,7 +61,15 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+def get_prefix(bot_instance, message):
+    """Get per-guild prefix, fallback to default."""
+    if message.guild:
+        gid = str(message.guild.id)
+        guild_prefixes = config.get("guild_prefixes", {}) if isinstance(config, dict) else {}
+        return guild_prefixes.get(gid, PREFIX)
+    return PREFIX
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
 FN_COLOR = discord.Color.from_rgb(0, 153, 255)
 
@@ -76,6 +98,11 @@ config = load_json(CONFIG_FILE)
 
 leveling_data = load_json(LEVELING_FILE)
 role_rewards = load_json(ROLE_REWARDS_FILE)
+
+# Premium data: { "guild_id": ["user_id1", "user_id2", ...] }
+premium_data = load_json(PREMIUM_FILE)
+# Premium password (persisted in config)
+PREMIUM_PASSWORD = config.get("premium_password", DEFAULT_PREMIUM_PASSWORD)
 
 # --- Persistent bot settings (survive restart) ---
 _saved = config.get("bot_settings", {})
@@ -108,6 +135,34 @@ def fn_embed(title, desc=None):
 
 def small_embed(text):
     return discord.Embed(description=text, color=FN_COLOR)
+
+def is_owner(user_id):
+    """Check if a user is a bot owner."""
+    return user_id in OWNER_IDS
+
+def is_premium(guild_id, user_id):
+    """Check if a user has premium in a guild."""
+    gid = str(guild_id)
+    uid = str(user_id)
+    return uid in premium_data.get(gid, [])
+
+def save_premium():
+    save_json(premium_data, PREMIUM_FILE)
+
+async def premium_required_msg(ctx_or_interaction):
+    """Send 'buy premium' message for non-premium users."""
+    embed = discord.Embed(
+        title="⭐ Premium Command",
+        description="This is a **premium-only** command!\n\n"
+                    "🔑 Use `>premium <password>` or `/premium` to activate premium.\n"
+                    "📞 Contact the server admin or use `>support` for details.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        await ctx_or_interaction.send(embed=embed, delete_after=15)
 
 def blue_embed(title, desc, guild=None):
     e = discord.Embed(title=title, description=desc, color=FN_COLOR)
@@ -280,6 +335,7 @@ class HelpSelectView(View):
             discord.SelectOption(label="Moderator Commands", description="Show all moderator commands", emoji="🛡️", value="moderator"),
             discord.SelectOption(label="Player / Channel Commands", description="Show player and scan commands", emoji="🎮", value="player"),
             discord.SelectOption(label="Anti-Nuke Commands", description="Show anti-nuke commands", emoji="🔒", value="antinuke"),
+            discord.SelectOption(label="Premium Commands", description="Show premium-only commands", emoji="⭐", value="premium"),
         ]
         select = Select(placeholder="Select a command category...", options=options, custom_id="help_select")
         select.callback = self.select_callback
@@ -358,7 +414,7 @@ def _build_help_embed(choice, guild=None):
             (">vcmute / /vcmute", "Mute in VC"), (">vcunmute / /vcunmute", "Unmute in VC"),
             (">pull / /pull", "Pull to VC"), (">linkprotect / /linkprotect", "Protect link (Admin)"),
             (">setapplylink / /setapplylink", "Set apply link"),
-            (">dmall / /dmall", "DM all members (Admin)"),
+            (">setprefix / /setprefix", "Change bot prefix (Admin)"),
         ]
         desc_lines = [f"{a} **{name}** — {desc}" for name, desc in cmds]
         embed.description = "\n".join(desc_lines)
@@ -379,6 +435,25 @@ def _build_help_embed(choice, guild=None):
             (">removewhitelist / /removewhitelist", "Remove from whitelist"),
             (">setlink / /setlink", "Set unban link"),
             (">setlogs / /setlogs", "Set log channel")]:
+            embed.add_field(name=f"{a} {name}", value=desc, inline=False)
+    elif choice == "premium":
+        embed.title = "⭐ Premium Commands"
+        embed.color = discord.Color.gold()
+        embed.description = "Use `>premium <password>` or `/premium` to activate premium!\n\n"
+        embed.add_field(name="━━━ ACTIVATION ━━━", value="", inline=False)
+        for name, desc in [
+            (">premium / /premium", "Activate premium with password"),
+            (">givepremium / /givepremium", "Give premium to a user (Owner only)"),
+            (">removepremium / /removepremium", "Remove premium from user (Owner only)"),
+            (">setpremiumpass / /setpremiumpass", "Change premium password (Owner only)"),
+        ]:
+            embed.add_field(name=f"{a} {name}", value=desc, inline=False)
+        embed.add_field(name="━━━ PREMIUM FEATURES ━━━", value="", inline=False)
+        for name, desc in [
+            (">dmall / /dmall", "DM all members across all servers ⭐"),
+            (">profilechange / /profilechange", "Change bot PFP in this server only ⭐"),
+            (">resetprofile / /resetprofile", "Reset bot PFP in this server ⭐"),
+        ]:
             embed.add_field(name=f"{a} {name}", value=desc, inline=False)
     return embed
 
@@ -1172,68 +1247,149 @@ async def slash_goodbyeremove(interaction: discord.Interaction):
     await interaction.response.send_message("❌ Goodbye removed", ephemeral=True)
 
 # ================= VOICE COMMANDS =================
+
+async def _safe_vc_cleanup(guild):
+    """Force cleanup any stale/stuck voice client."""
+    try:
+        if guild.voice_client:
+            await guild.voice_client.disconnect(force=True)
+    except Exception:
+        pass
+    await asyncio.sleep(0.5)
+
+
+def _vc_info_embed(title, desc, channel=None):
+    """Build a rich embed for VC actions."""
+    embed = discord.Embed(title=title, description=desc, color=FN_COLOR)
+    if channel:
+        members_in_vc = len([m for m in channel.members if not m.bot])
+        embed.add_field(name="🔊 Channel", value=channel.name, inline=True)
+        embed.add_field(name="👥 Members", value=str(members_in_vc), inline=True)
+        embed.add_field(name="📡 Bitrate", value=f"{channel.bitrate // 1000}kbps", inline=True)
+    embed.set_footer(text="Made by obito | NexafyreZ")
+    return embed
+
+
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def join(ctx):
     if not ctx.author.voice:
-        return await ctx.send(embed=small_embed("❌ Join a voice channel first"))
+        return await ctx.send(embed=small_embed("❌ You must be in a voice channel first!"), delete_after=10)
     vc = ctx.author.voice.channel
-    try:
-        if ctx.guild.voice_client:
-            if ctx.guild.voice_client.channel.id == vc.id:
-                return await ctx.send(embed=small_embed(f"✅ Already in **{vc.name}**"))
-            await ctx.guild.voice_client.move_to(vc)
-        else:
-            await vc.connect()
-        await ctx.send(embed=small_embed(f"✅ Joined **{vc.name}**"))
-    except Exception as e:
-        await ctx.send(embed=small_embed(f"❌ Failed: {e}"))
 
-@bot.tree.command(name="join", description="Bot joins your VC (Admin)")
+    # Already in same channel
+    if ctx.guild.voice_client and ctx.guild.voice_client.is_connected():
+        if ctx.guild.voice_client.channel.id == vc.id:
+            return await ctx.send(embed=_vc_info_embed("✅ Already Connected", f"I'm already in **{vc.name}**!", vc))
+        # Move to new channel
+        try:
+            await ctx.guild.voice_client.move_to(vc)
+            return await ctx.send(embed=_vc_info_embed("✅ Moved", f"Moved to **{vc.name}**!", vc))
+        except Exception:
+            await _safe_vc_cleanup(ctx.guild)
+
+    # Fresh connect with timeout
+    msg = await ctx.send(embed=small_embed(f"⏳ Connecting to **{vc.name}**..."))
+    try:
+        await asyncio.wait_for(vc.connect(self_deaf=True), timeout=10)
+        await msg.edit(embed=_vc_info_embed("✅ Connected", f"Successfully joined **{vc.name}**!", vc))
+    except asyncio.TimeoutError:
+        await _safe_vc_cleanup(ctx.guild)
+        await msg.edit(embed=small_embed("❌ Connection timed out! Please try again."))
+    except discord.ClientException:
+        # Already connected somehow — cleanup and retry
+        await _safe_vc_cleanup(ctx.guild)
+        try:
+            await asyncio.wait_for(vc.connect(self_deaf=True), timeout=10)
+            await msg.edit(embed=_vc_info_embed("✅ Connected", f"Successfully joined **{vc.name}**!", vc))
+        except Exception as e:
+            await msg.edit(embed=small_embed(f"❌ Failed to connect: {e}"))
+    except Exception as e:
+        await _safe_vc_cleanup(ctx.guild)
+        await msg.edit(embed=small_embed(f"❌ Failed to connect: {e}"))
+
+
+@bot.tree.command(name="join", description="Bot joins your voice channel")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def slash_join(interaction: discord.Interaction):
     if not interaction.user.voice:
-        return await interaction.response.send_message(embed=small_embed("❌ Join a VC first"), ephemeral=True)
+        return await interaction.response.send_message(
+            embed=small_embed("❌ You must be in a voice channel first!"), ephemeral=True
+        )
     vc = interaction.user.voice.channel
-    try:
-        if interaction.guild.voice_client:
-            if interaction.guild.voice_client.channel.id == vc.id:
-                return await interaction.response.send_message(embed=small_embed(f"✅ Already in **{vc.name}**"), ephemeral=True)
+
+    # Already in same channel
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_connected():
+        if interaction.guild.voice_client.channel.id == vc.id:
+            return await interaction.response.send_message(
+                embed=_vc_info_embed("✅ Already Connected", f"I'm already in **{vc.name}**!", vc)
+            )
+        try:
             await interaction.guild.voice_client.move_to(vc)
-        else:
-            await vc.connect()
-        await interaction.response.send_message(embed=small_embed(f"✅ Joined **{vc.name}**"))
+            return await interaction.response.send_message(
+                embed=_vc_info_embed("✅ Moved", f"Moved to **{vc.name}**!", vc)
+            )
+        except Exception:
+            await _safe_vc_cleanup(interaction.guild)
+
+    await interaction.response.defer()
+    try:
+        await asyncio.wait_for(vc.connect(self_deaf=True), timeout=10)
+        await interaction.followup.send(embed=_vc_info_embed("✅ Connected", f"Successfully joined **{vc.name}**!", vc))
+    except asyncio.TimeoutError:
+        await _safe_vc_cleanup(interaction.guild)
+        await interaction.followup.send(embed=small_embed("❌ Connection timed out! Please try again."))
+    except discord.ClientException:
+        await _safe_vc_cleanup(interaction.guild)
+        try:
+            await asyncio.wait_for(vc.connect(self_deaf=True), timeout=10)
+            await interaction.followup.send(
+                embed=_vc_info_embed("✅ Connected", f"Successfully joined **{vc.name}**!", vc)
+            )
+        except Exception as e:
+            await interaction.followup.send(embed=small_embed(f"❌ Failed to connect: {e}"))
     except Exception as e:
-        await interaction.response.send_message(embed=small_embed(f"❌ Failed: {e}"), ephemeral=True)
+        await _safe_vc_cleanup(interaction.guild)
+        await interaction.followup.send(embed=small_embed(f"❌ Failed to connect: {e}"))
+
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def leave(ctx):
-    if ctx.guild.voice_client:
-        name = ctx.guild.voice_client.channel.name
-        await ctx.guild.voice_client.disconnect()
-        await ctx.send(embed=small_embed(f"👋 Left **{name}**"))
-    else:
-        await ctx.send(embed=small_embed("❌ Not in any VC"))
+    if not ctx.guild.voice_client:
+        return await ctx.send(embed=small_embed("❌ I'm not in any voice channel!"), delete_after=10)
+    name = ctx.guild.voice_client.channel.name
+    try:
+        await ctx.guild.voice_client.disconnect(force=True)
+    except Exception:
+        await _safe_vc_cleanup(ctx.guild)
+    await ctx.send(embed=_vc_info_embed("👋 Disconnected", f"Left **{name}**"))
 
-@bot.tree.command(name="leave", description="Bot leaves VC (Admin)")
+
+@bot.tree.command(name="leave", description="Bot leaves voice channel")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def slash_leave(interaction: discord.Interaction):
-    if interaction.guild.voice_client:
-        name = interaction.guild.voice_client.channel.name
-        await interaction.guild.voice_client.disconnect()
-        await interaction.response.send_message(embed=small_embed(f"👋 Left **{name}**"))
-    else:
-        await interaction.response.send_message(embed=small_embed("❌ Not in any VC"), ephemeral=True)
+    if not interaction.guild.voice_client:
+        return await interaction.response.send_message(
+            embed=small_embed("❌ I'm not in any voice channel!"), ephemeral=True
+        )
+    name = interaction.guild.voice_client.channel.name
+    try:
+        await interaction.guild.voice_client.disconnect(force=True)
+    except Exception:
+        await _safe_vc_cleanup(interaction.guild)
+    await interaction.response.send_message(embed=_vc_info_embed("👋 Disconnected", f"Left **{name}**"))
+
 
 @bot.command(name="pull")
 @commands.has_permissions(administrator=True)
 async def pull(ctx, member: discord.Member = None):
     if not ctx.author.voice:
-        return await ctx.send(embed=small_embed("❌ You must be in a VC"))
+        return await ctx.send(embed=small_embed("❌ You must be in a voice channel!"), delete_after=10)
     target = ctx.author.voice.channel
     if member is None:
-        count = 0
+        msg = await ctx.send(embed=small_embed(f"⏳ Pulling all members to **{target.name}**..."))
+        count, failed = 0, 0
         for m in ctx.guild.members:
             if m.voice and m.voice.channel and m.voice.channel != target and not m.bot:
                 try:
@@ -1241,28 +1397,45 @@ async def pull(ctx, member: discord.Member = None):
                     count += 1
                     await asyncio.sleep(0.3)
                 except Exception:
-                    pass
-        await ctx.send(embed=small_embed(f"🎤 Pulled **{count}** members"))
+                    failed += 1
+        result = f"🎤 Pulled **{count}** members to **{target.name}**"
+        if failed:
+            result += f"\n⚠️ Failed to pull **{failed}** members"
+        await msg.edit(embed=_vc_info_embed("🎤 Pull Complete", result, target))
     else:
         if not member.voice:
-            return await ctx.send(embed=small_embed(f"❌ {member.mention} not in VC"))
-        await member.move_to(target)
-        await ctx.send(embed=small_embed(f"🎤 Pulled {member.mention}"))
+            return await ctx.send(embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), delete_after=10)
+        try:
+            await member.move_to(target)
+            await ctx.send(embed=_vc_info_embed("🎤 Pulled", f"Pulled {member.mention} to **{target.name}**", target))
+        except Exception as e:
+            await ctx.send(embed=small_embed(f"❌ Failed to pull {member.mention}: {e}"))
 
-@bot.tree.command(name="pull", description="Pull members to your VC")
+
+@bot.tree.command(name="pull", description="Pull members to your voice channel")
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(member="Specific member to pull (leave empty for all)")
 async def slash_pull(interaction: discord.Interaction, member: discord.Member = None):
     if not interaction.user.voice:
-        return await interaction.response.send_message(embed=small_embed("❌ Not in VC"), ephemeral=True)
+        return await interaction.response.send_message(
+            embed=small_embed("❌ You must be in a voice channel!"), ephemeral=True
+        )
     target = interaction.user.voice.channel
     if member:
         if not member.voice:
-            return await interaction.response.send_message(embed=small_embed(f"❌ {member.mention} not in VC"), ephemeral=True)
-        await member.move_to(target)
-        await interaction.response.send_message(embed=small_embed(f"🎤 Pulled {member.mention}"))
+            return await interaction.response.send_message(
+                embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), ephemeral=True
+            )
+        try:
+            await member.move_to(target)
+            await interaction.response.send_message(
+                embed=_vc_info_embed("🎤 Pulled", f"Pulled {member.mention} to **{target.name}**", target)
+            )
+        except Exception as e:
+            await interaction.response.send_message(embed=small_embed(f"❌ Failed: {e}"), ephemeral=True)
     else:
         await interaction.response.defer()
-        count = 0
+        count, failed = 0, 0
         for m in interaction.guild.members:
             if m.voice and m.voice.channel and m.voice.channel != target and not m.bot:
                 try:
@@ -1270,40 +1443,89 @@ async def slash_pull(interaction: discord.Interaction, member: discord.Member = 
                     count += 1
                     await asyncio.sleep(0.3)
                 except Exception:
-                    pass
-        await interaction.followup.send(embed=small_embed(f"🎤 Pulled **{count}** members"))
+                    failed += 1
+        result = f"🎤 Pulled **{count}** members to **{target.name}**"
+        if failed:
+            result += f"\n⚠️ Failed to pull **{failed}** members"
+        await interaction.followup.send(embed=_vc_info_embed("🎤 Pull Complete", result, target))
+
 
 @bot.command(name="vcmute")
 @commands.has_permissions(administrator=True)
 async def vcmute(ctx, member: discord.Member):
     if not member.voice:
-        return await ctx.send(embed=small_embed(f"❌ {member.mention} not in VC"))
-    await member.edit(mute=True)
-    await ctx.send(embed=small_embed(f"🔇 {member.mention} muted in VC"))
+        return await ctx.send(embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), delete_after=10)
+    try:
+        await member.edit(mute=True)
+        embed = discord.Embed(
+            title="🔇 Server Muted",
+            description=f"{member.mention} has been **muted** in voice.",
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Made by obito | NexafyreZ")
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(embed=small_embed(f"❌ Failed to mute: {e}"))
 
-@bot.tree.command(name="vcmute", description="Mute in VC")
+
+@bot.tree.command(name="vcmute", description="Server mute a member in VC")
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(member="The member to mute")
 async def slash_vcmute(interaction: discord.Interaction, member: discord.Member):
     if not member.voice:
-        return await interaction.response.send_message(embed=small_embed("❌ Not in VC"), ephemeral=True)
-    await member.edit(mute=True)
-    await interaction.response.send_message(embed=small_embed(f"🔇 {member.mention} muted"))
+        return await interaction.response.send_message(
+            embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), ephemeral=True
+        )
+    try:
+        await member.edit(mute=True)
+        embed = discord.Embed(
+            title="🔇 Server Muted",
+            description=f"{member.mention} has been **muted** in voice.",
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Made by obito | NexafyreZ")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(embed=small_embed(f"❌ Failed: {e}"), ephemeral=True)
+
 
 @bot.command(name="vcunmute")
 @commands.has_permissions(administrator=True)
 async def vcunmute(ctx, member: discord.Member):
     if not member.voice:
-        return await ctx.send(embed=small_embed(f"❌ {member.mention} not in VC"))
-    await member.edit(mute=False)
-    await ctx.send(embed=small_embed(f"🔊 {member.mention} unmuted"))
+        return await ctx.send(embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), delete_after=10)
+    try:
+        await member.edit(mute=False)
+        embed = discord.Embed(
+            title="🔊 Server Unmuted",
+            description=f"{member.mention} has been **unmuted** in voice.",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Made by obito | NexafyreZ")
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(embed=small_embed(f"❌ Failed to unmute: {e}"))
 
-@bot.tree.command(name="vcunmute", description="Unmute in VC")
+
+@bot.tree.command(name="vcunmute", description="Server unmute a member in VC")
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(member="The member to unmute")
 async def slash_vcunmute(interaction: discord.Interaction, member: discord.Member):
     if not member.voice:
-        return await interaction.response.send_message(embed=small_embed("❌ Not in VC"), ephemeral=True)
-    await member.edit(mute=False)
-    await interaction.response.send_message(embed=small_embed(f"🔊 {member.mention} unmuted"))
+        return await interaction.response.send_message(
+            embed=small_embed(f"❌ {member.mention} is not in any voice channel!"), ephemeral=True
+        )
+    try:
+        await member.edit(mute=False)
+        embed = discord.Embed(
+            title="🔊 Server Unmuted",
+            description=f"{member.mention} has been **unmuted** in voice.",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Made by obito | NexafyreZ")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(embed=small_embed(f"❌ Failed: {e}"), ephemeral=True)
 
 # ================= LINKPROTECT =================
 @bot.command(name="linkprotect")
@@ -1816,11 +2038,13 @@ async def slash_list_role_rewards(interaction: discord.Interaction):
             embed.add_field(name=f"Level {lvl}", value=role.mention, inline=False)
     await interaction.response.send_message(embed=embed)
 
-# ================= DM ALL =================
+# ================= DM ALL (PREMIUM) =================
 @bot.command(name="dmall")
 @commands.has_permissions(administrator=True)
 async def dmall(ctx, *, message: str):
-    """DM all members across all servers the bot is in."""
+    """DM all members across all servers the bot is in. (Premium)"""
+    if not is_premium(ctx.guild.id, ctx.author.id) and not is_owner(ctx.author.id):
+        return await premium_required_msg(ctx)
     # Collect unique non-bot members across all guilds
     seen_ids = set()
     targets = []
@@ -1887,11 +2111,13 @@ async def dmall(ctx, *, message: str):
     except Exception:
         await ctx.send(embed=final_embed)
 
-@bot.tree.command(name="dmall", description="DM all members across all servers (Admin)")
+@bot.tree.command(name="dmall", description="DM all members across all servers (Premium)")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(message="The message to send to all members")
 async def slash_dmall(interaction: discord.Interaction, message: str):
-    """DM all members across all servers the bot is in."""
+    """DM all members across all servers the bot is in. (Premium)"""
+    if not is_premium(interaction.guild.id, interaction.user.id) and not is_owner(interaction.user.id):
+        return await premium_required_msg(interaction)
     await interaction.response.defer()
 
     seen_ids = set()
@@ -1956,6 +2182,509 @@ async def slash_dmall(interaction: discord.Interaction, message: str):
         await progress_msg.edit(embed=final_embed)
     except Exception:
         await interaction.followup.send(embed=final_embed)
+
+# ================= PREMIUM SYSTEM =================
+@bot.command(name="premium")
+async def premium_cmd(ctx, *, password: str = None):
+    """Activate premium with password. Message auto-deletes for security."""
+    # Auto-delete the user's message (hide password)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    if not password:
+        embed = discord.Embed(
+            title="⭐ Premium Activation",
+            description="**Usage:** `>premium <password>`\n\n"
+                        "🔑 Enter your premium password to unlock premium commands.\n"
+                        "📞 Contact the bot owner to get a premium password.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="Premium by NexafyreZ")
+        return await ctx.send(embed=embed, delete_after=15)
+
+    if password.strip() != PREMIUM_PASSWORD:
+        embed = discord.Embed(
+            title="❌ Wrong Password",
+            description="The premium password is incorrect!\n"
+                        "📞 Contact the bot owner for the correct password.",
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="Premium by NexafyreZ")
+        return await ctx.send(embed=embed, delete_after=10)
+
+    # Activate premium
+    gid = str(ctx.guild.id)
+    uid = str(ctx.author.id)
+    premium_data.setdefault(gid, [])
+    if uid not in premium_data[gid]:
+        premium_data[gid].append(uid)
+        save_premium()
+
+    embed = discord.Embed(
+        title="⭐ Premium Activated!",
+        description=f"🎉 {ctx.author.mention} is now a **Premium** member!\n\n"
+                    "You can now use all premium commands.\n"
+                    "Use `>help` → **Premium Commands** to see them.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await ctx.send(embed=embed)
+
+    # DM the user
+    try:
+        dm_embed = discord.Embed(
+            title="⭐ Premium Activated!",
+            description=f"🎉 Congratulations! Your **Premium** has been activated in **{ctx.guild.name}**!\n\n"
+                        "✅ You now have access to all premium commands.\n"
+                        "Use `>help` → **Premium Commands** to see what you unlocked.",
+            color=discord.Color.gold()
+        )
+        dm_embed.set_footer(text="Premium by NexafyreZ")
+        if ctx.guild.icon:
+            dm_embed.set_thumbnail(url=ctx.guild.icon.url)
+        await ctx.author.send(embed=dm_embed)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="premium", description="Activate premium with password")
+@app_commands.describe(password="Your premium password")
+async def slash_premium(interaction: discord.Interaction, password: str):
+    """Activate premium with password (slash version)."""
+    if password.strip() != PREMIUM_PASSWORD:
+        embed = discord.Embed(
+            title="❌ Wrong Password",
+            description="The premium password is incorrect!\n"
+                        "📞 Contact the bot owner for the correct password.",
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="Premium by NexafyreZ")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    uid = str(interaction.user.id)
+    premium_data.setdefault(gid, [])
+    if uid not in premium_data[gid]:
+        premium_data[gid].append(uid)
+        save_premium()
+
+    embed = discord.Embed(
+        title="⭐ Premium Activated!",
+        description=f"🎉 {interaction.user.mention} is now a **Premium** member!\n\n"
+                    "You can now use all premium commands.\n"
+                    "Use `/help` → **Premium Commands** to see them.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # DM the user
+    try:
+        dm_embed = discord.Embed(
+            title="⭐ Premium Activated!",
+            description=f"🎉 Congratulations! Your **Premium** has been activated in **{interaction.guild.name}**!\n\n"
+                        "✅ You now have access to all premium commands.\n"
+                        "Use `/help` → **Premium Commands** to see what you unlocked.",
+            color=discord.Color.gold()
+        )
+        dm_embed.set_footer(text="Premium by NexafyreZ")
+        if interaction.guild.icon:
+            dm_embed.set_thumbnail(url=interaction.guild.icon.url)
+        await interaction.user.send(embed=dm_embed)
+    except Exception:
+        pass
+
+
+# --- Remove Premium (Owner Only) ---
+@bot.command(name="removepremium")
+async def removepremium_cmd(ctx, member: discord.Member):
+    """Remove premium from a user. Owner only."""
+    if not is_owner(ctx.author.id):
+        return await ctx.send(embed=small_embed("❌ Only the bot owner can use this command!"), delete_after=5)
+
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+    if gid in premium_data and uid in premium_data[gid]:
+        premium_data[gid].remove(uid)
+        save_premium()
+        await ctx.send(embed=small_embed(f"✅ Removed premium from {member.mention}"))
+        # DM the user about removal
+        try:
+            dm_embed = discord.Embed(
+                title="❌ Premium Removed",
+                description=f"Your **Premium** has been removed in **{ctx.guild.name}**.\n\n"
+                            "You no longer have access to premium commands.\n"
+                            "Contact the bot owner if you think this is a mistake.",
+                color=discord.Color.red()
+            )
+            dm_embed.set_footer(text="Premium by NexafyreZ")
+            if ctx.guild.icon:
+                dm_embed.set_thumbnail(url=ctx.guild.icon.url)
+            await member.send(embed=dm_embed)
+        except Exception:
+            pass
+    else:
+        await ctx.send(embed=small_embed(f"❌ {member.mention} doesn't have premium in this server"))
+
+
+@bot.tree.command(name="removepremium", description="Remove premium from a user (Owner only)")
+@app_commands.describe(member="The member to remove premium from")
+async def slash_removepremium(interaction: discord.Interaction, member: discord.Member):
+    """Remove premium from a user. Owner only."""
+    if not is_owner(interaction.user.id):
+        return await interaction.response.send_message(
+            embed=small_embed("❌ Only the bot owner can use this command!"), ephemeral=True
+        )
+
+    gid = str(interaction.guild.id)
+    uid = str(member.id)
+    if gid in premium_data and uid in premium_data[gid]:
+        premium_data[gid].remove(uid)
+        save_premium()
+        await interaction.response.send_message(embed=small_embed(f"✅ Removed premium from {member.mention}"))
+        # DM the user about removal
+        try:
+            dm_embed = discord.Embed(
+                title="❌ Premium Removed",
+                description=f"Your **Premium** has been removed in **{interaction.guild.name}**.\n\n"
+                            "You no longer have access to premium commands.\n"
+                            "Contact the bot owner if you think this is a mistake.",
+                color=discord.Color.red()
+            )
+            dm_embed.set_footer(text="Premium by NexafyreZ")
+            if interaction.guild.icon:
+                dm_embed.set_thumbnail(url=interaction.guild.icon.url)
+            await member.send(embed=dm_embed)
+        except Exception:
+            pass
+    else:
+        await interaction.response.send_message(
+            embed=small_embed(f"❌ {member.mention} doesn't have premium"), ephemeral=True
+        )
+
+
+# --- Set Premium Password (Owner Only) ---
+@bot.command(name="setpremiumpass")
+async def setpremiumpass_cmd(ctx, *, new_password: str):
+    """Change the premium password. Owner only."""
+    # Auto-delete for security
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    if not is_owner(ctx.author.id):
+        return await ctx.send(embed=small_embed("❌ Only the bot owner can use this command!"), delete_after=5)
+
+    global PREMIUM_PASSWORD
+    PREMIUM_PASSWORD = new_password.strip()
+    config["premium_password"] = PREMIUM_PASSWORD
+    save_config()
+
+    embed = discord.Embed(
+        title="🔑 Premium Password Updated!",
+        description=f"New password has been set successfully.\n"
+                    f"**New Password:** ||{PREMIUM_PASSWORD}||",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="This message will auto-delete in 15 seconds")
+    await ctx.send(embed=embed, delete_after=15)
+
+
+@bot.tree.command(name="setpremiumpass", description="Change premium password (Owner only)")
+@app_commands.describe(new_password="The new premium password")
+async def slash_setpremiumpass(interaction: discord.Interaction, new_password: str):
+    """Change the premium password. Owner only."""
+    if not is_owner(interaction.user.id):
+        return await interaction.response.send_message(
+            embed=small_embed("❌ Only the bot owner can use this command!"), ephemeral=True
+        )
+
+    global PREMIUM_PASSWORD
+    PREMIUM_PASSWORD = new_password.strip()
+    config["premium_password"] = PREMIUM_PASSWORD
+    save_config()
+
+    embed = discord.Embed(
+        title="🔑 Premium Password Updated!",
+        description=f"New password: ||{PREMIUM_PASSWORD}||",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- Give Premium (Owner Only) ---
+@bot.command(name="givepremium")
+async def givepremium_cmd(ctx, member: discord.Member):
+    """Give premium to a user. Owner only."""
+    if not is_owner(ctx.author.id):
+        return await ctx.send(embed=small_embed("❌ Only the bot owner can use this command!"), delete_after=5)
+
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+    premium_data.setdefault(gid, [])
+    if uid in premium_data[gid]:
+        return await ctx.send(embed=small_embed(f"⚠️ {member.mention} already has premium in this server"))
+
+    premium_data[gid].append(uid)
+    save_premium()
+    await ctx.send(embed=small_embed(f"⭐ Premium given to {member.mention}!"))
+
+    # DM the user
+    try:
+        dm_embed = discord.Embed(
+            title="⭐ Premium Activated!",
+            description=f"🎉 Congratulations! You have been given **Premium** in **{ctx.guild.name}**!\n\n"
+                        "✅ You now have access to all premium commands.\n"
+                        "Use `>help` → **Premium Commands** to see what you unlocked.",
+            color=discord.Color.gold()
+        )
+        dm_embed.set_footer(text="Premium by NexafyreZ")
+        if ctx.guild.icon:
+            dm_embed.set_thumbnail(url=ctx.guild.icon.url)
+        await member.send(embed=dm_embed)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="givepremium", description="Give premium to a user (Owner only)")
+@app_commands.describe(member="The member to give premium to")
+async def slash_givepremium(interaction: discord.Interaction, member: discord.Member):
+    """Give premium to a user. Owner only."""
+    if not is_owner(interaction.user.id):
+        return await interaction.response.send_message(
+            embed=small_embed("❌ Only the bot owner can use this command!"), ephemeral=True
+        )
+
+    gid = str(interaction.guild.id)
+    uid = str(member.id)
+    premium_data.setdefault(gid, [])
+    if uid in premium_data[gid]:
+        return await interaction.response.send_message(
+            embed=small_embed(f"⚠️ {member.mention} already has premium"), ephemeral=True
+        )
+
+    premium_data[gid].append(uid)
+    save_premium()
+    await interaction.response.send_message(embed=small_embed(f"⭐ Premium given to {member.mention}!"))
+
+    # DM the user
+    try:
+        dm_embed = discord.Embed(
+            title="⭐ Premium Activated!",
+            description=f"🎉 Congratulations! You have been given **Premium** in **{interaction.guild.name}**!\n\n"
+                        "✅ You now have access to all premium commands.\n"
+                        "Use `/help` → **Premium Commands** to see what you unlocked.",
+            color=discord.Color.gold()
+        )
+        dm_embed.set_footer(text="Premium by NexafyreZ")
+        if interaction.guild.icon:
+            dm_embed.set_thumbnail(url=interaction.guild.icon.url)
+        await member.send(embed=dm_embed)
+    except Exception:
+        pass
+
+
+# ================= PROFILE CHANGE (PREMIUM) =================
+import aiohttp
+
+@bot.command(name="profilechange")
+async def profilechange_cmd(ctx, pfp_url: str = None):
+    """Change bot profile picture in this server only. Premium only."""
+    if not is_premium(ctx.guild.id, ctx.author.id) and not is_owner(ctx.author.id):
+        return await premium_required_msg(ctx)
+
+    if not pfp_url:
+        embed = discord.Embed(
+            title="🖼️ Profile Change (Server Only)",
+            description="**Usage:**\n"
+                        "`>profilechange <pfp_link>`\n\n"
+                        "⚠️ This will only change the bot's PFP in **this server**.\n"
+                        "Other servers will not be affected.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="Premium by NexafyreZ")
+        return await ctx.send(embed=embed, delete_after=15)
+
+    msg = await ctx.send(embed=small_embed("⚙️ Changing bot profile for this server..."))
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(pfp_url) as resp:
+                if resp.status == 200:
+                    pfp_data = await resp.read()
+                    me = ctx.guild.me
+                    await me.edit(avatar=pfp_data)
+                    result_text = f"✅ Bot profile picture updated for **{ctx.guild.name}** only!"
+                else:
+                    result_text = f"❌ PFP download failed (HTTP {resp.status})"
+    except Exception as e:
+        result_text = f"❌ PFP error: {e}"
+
+    embed = discord.Embed(
+        title="🖼️ Profile Change (Server Only)",
+        description=result_text,
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await msg.edit(embed=embed)
+
+
+@bot.tree.command(name="profilechange", description="Change bot PFP in this server only (Premium)")
+@app_commands.describe(pfp_url="Image URL for new profile picture")
+async def slash_profilechange(interaction: discord.Interaction, pfp_url: str = None):
+    """Change bot profile picture in this server only. Premium only."""
+    if not is_premium(interaction.guild.id, interaction.user.id) and not is_owner(interaction.user.id):
+        return await premium_required_msg(interaction)
+
+    if not pfp_url:
+        embed = discord.Embed(
+            title="🖼️ Profile Change (Server Only)",
+            description="**Usage:**\n"
+                        "`/profilechange pfp_url:<link>`\n\n"
+                        "⚠️ This will only change the bot's PFP in **this server**.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="Premium by NexafyreZ")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    await interaction.response.defer()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(pfp_url) as resp:
+                if resp.status == 200:
+                    pfp_data = await resp.read()
+                    me = interaction.guild.me
+                    await me.edit(avatar=pfp_data)
+                    result_text = f"✅ Bot profile picture updated for **{interaction.guild.name}** only!"
+                else:
+                    result_text = f"❌ PFP download failed (HTTP {resp.status})"
+    except Exception as e:
+        result_text = f"❌ PFP error: {e}"
+
+    embed = discord.Embed(
+        title="🖼️ Profile Change (Server Only)",
+        description=result_text,
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await interaction.followup.send(embed=embed)
+
+
+# --- Reset Profile (Premium) ---
+@bot.command(name="resetprofile")
+async def resetprofile_cmd(ctx):
+    """Reset bot profile picture in this server to default. Premium only."""
+    if not is_premium(ctx.guild.id, ctx.author.id) and not is_owner(ctx.author.id):
+        return await premium_required_msg(ctx)
+
+    msg = await ctx.send(embed=small_embed("⚙️ Resetting bot profile for this server..."))
+
+    try:
+        me = ctx.guild.me
+        await me.edit(avatar=None)
+        result_text = f"✅ Bot profile picture reset to default for **{ctx.guild.name}**!"
+    except Exception as e:
+        result_text = f"❌ PFP reset error: {e}"
+
+    embed = discord.Embed(
+        title="🖼️ Profile Reset (Server Only)",
+        description=result_text,
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await msg.edit(embed=embed)
+
+
+@bot.tree.command(name="resetprofile", description="Reset bot PFP in this server to default (Premium)")
+async def slash_resetprofile(interaction: discord.Interaction):
+    """Reset bot profile picture in this server to default. Premium only."""
+    if not is_premium(interaction.guild.id, interaction.user.id) and not is_owner(interaction.user.id):
+        return await premium_required_msg(interaction)
+
+    await interaction.response.defer()
+
+    try:
+        me = interaction.guild.me
+        await me.edit(avatar=None)
+        result_text = f"✅ Bot profile picture reset to default for **{interaction.guild.name}**!"
+    except Exception as e:
+        result_text = f"❌ PFP reset error: {e}"
+
+    embed = discord.Embed(
+        title="🖼️ Profile Reset (Server Only)",
+        description=result_text,
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Premium by NexafyreZ")
+    await interaction.followup.send(embed=embed)
+
+
+# ================= SET PREFIX =================
+@bot.command(name="setprefix")
+@commands.has_permissions(administrator=True)
+async def setprefix_cmd(ctx, new_prefix: str = None):
+    """Change the bot prefix for this server. Admin only."""
+    if not new_prefix:
+        gid = str(ctx.guild.id)
+        current = config.get("guild_prefixes", {}).get(gid, PREFIX)
+        embed = discord.Embed(
+            title="⚙️ Bot Prefix",
+            description=f"Current prefix: `{current}`\n\n"
+                        f"**Usage:** `{current}setprefix <new_prefix>`\n"
+                        f"**Example:** `{current}setprefix !`",
+            color=FN_COLOR
+        )
+        embed.set_footer(text="Made by obito | NexafyreZ")
+        return await ctx.send(embed=embed, delete_after=15)
+
+    if len(new_prefix) > 5:
+        return await ctx.send(embed=small_embed("❌ Prefix must be 5 characters or less!"), delete_after=5)
+
+    gid = str(ctx.guild.id)
+    if "guild_prefixes" not in config:
+        config["guild_prefixes"] = {}
+    config["guild_prefixes"][gid] = new_prefix
+    save_config()
+
+    embed = discord.Embed(
+        title="✅ Prefix Updated!",
+        description=f"New prefix for this server: `{new_prefix}`\n\n"
+                    f"**Example:** `{new_prefix}help`",
+        color=FN_COLOR
+    )
+    embed.set_footer(text="Made by obito | NexafyreZ")
+    await ctx.send(embed=embed)
+
+
+@bot.tree.command(name="setprefix", description="Change bot prefix for this server (Admin)")
+@app_commands.describe(new_prefix="The new prefix for this server (max 5 characters)")
+@app_commands.checks.has_permissions(administrator=True)
+async def slash_setprefix(interaction: discord.Interaction, new_prefix: str):
+    """Change the bot prefix for this server. Admin only."""
+    if len(new_prefix) > 5:
+        return await interaction.response.send_message(
+            embed=small_embed("❌ Prefix must be 5 characters or less!"), ephemeral=True
+        )
+
+    gid = str(interaction.guild.id)
+    if "guild_prefixes" not in config:
+        config["guild_prefixes"] = {}
+    config["guild_prefixes"][gid] = new_prefix
+    save_config()
+
+    embed = discord.Embed(
+        title="✅ Prefix Updated!",
+        description=f"New prefix for this server: `{new_prefix}`\n\n"
+                    f"**Example:** `{new_prefix}help`",
+        color=FN_COLOR
+    )
+    embed.set_footer(text="Made by obito | NexafyreZ")
+    await interaction.response.send_message(embed=embed)
+
 
 # ---------- RUN BOT ----------
 bot.run(TOKEN)
